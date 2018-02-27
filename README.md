@@ -3,7 +3,8 @@
 ## Course title :Advanced Computer Networking
 ### Course Instructor : Dr.Mohit P tahiliani
 
-references Implimentation of RARED in Linux Kernel
+## references
+Implimentation of RARED in Linux Kernel
 https://github.com/ShikhaBakshi/Implementation-of-RARED-in-Linux-Kernel
 
 Linux Kernel Queue Discipilne Algorithms Locations
