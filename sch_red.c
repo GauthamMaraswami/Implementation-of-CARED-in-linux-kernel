@@ -230,11 +230,11 @@ static int red_change(struct Qdisc *sch, struct nlattr *opt)
 		      nla_data(tb[TCA_RED_STAB]),
 		      max_P);
 //keypoint i dont know what is happening
-	cared_red_set_parms(&q->parms,
+/*	cared_red_set_parms(&q->parms,
 		      ctl->qth_min, ctl->qth_max, ctl->Wlog,
 		      ctl->Plog, ctl->Scell_log,
 		      nla_data(tb[TCA_RED_STAB]),
-		      max_P);
+		      max_P);*/
 	red_set_vars(&q->vars);
 
 	del_timer(&q->adapt_timer);
