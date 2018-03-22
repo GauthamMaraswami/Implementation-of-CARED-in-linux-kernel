@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NET_SCHED_RED_H
 #define __NET_SCHED_RED_H
 
@@ -10,47 +11,72 @@
 
 /*	Random Early Detection (RED) algorithm.
 	=======================================
+
 	Source: Sally Floyd and Van Jacobson, "Random Early Detection Gateways
 	for Congestion Avoidance", 1993, IEEE/ACM Transactions on Networking.
+
 	This file codes a "divisionless" version of RED algorithm
 	as written down in Fig.17 of the paper.
+
 	Short description.
 	------------------
+
 	When a new packet arrives we calculate the average queue length:
+
 	avg = (1-W)*avg + W*current_queue_len,
+
 	W is the filter time constant (chosen as 2^(-Wlog)), it controls
 	the inertia of the algorithm. To allow larger bursts, W should be
 	decreased.
+
 	if (avg > th_max) -> packet marked (dropped).
 	if (avg < th_min) -> packet passes.
 	if (th_min < avg < th_max) we calculate probability:
+
 	Pb = max_P * (avg - th_min)/(th_max-th_min)
+
 	and mark (drop) packet with this probability.
 	Pb changes from 0 (at avg==th_min) to max_P (avg==th_max).
 	max_P should be small (not 1), usually 0.01..0.02 is good value.
+
 	max_P is chosen as a number, so that max_P/(th_max-th_min)
 	is a negative power of two in order arithmetics to contain
 	only shifts.
+
+
 	Parameters, settable by user:
 	-----------------------------
+
 	qth_min		- bytes (should be < qth_max/2)
 	qth_max		- bytes (should be at least 2*qth_min and less limit)
 	Wlog	       	- bits (<32) log(1/W).
 	Plog	       	- bits (<32)
+
 	Plog is related to max_P by formula:
+
 	max_P = (qth_max-qth_min)/2^Plog;
+
 	F.e. if qth_max=128K and qth_min=32K, then Plog=22
 	corresponds to max_P=0.02
+
 	Scell_log
 	Stab
+
 	Lookup table for log((1-W)^(t/t_ave).
+
+
 	NOTES:
+
 	Upper bound on W.
 	-----------------
+
 	If you want to allow bursts of L packets of size S,
 	you should choose W:
+
 	L + 1 - th_min/S < (1-(1-W)^L)/W
+
 	th_min/S = 32         th_min/S = 4
+
 	log(W)	L
 	-1	33
 	-2	35
@@ -121,7 +147,7 @@ struct red_vars {
 	int		qcount;		/* Number of packets since last random
 					   number generation */
 	u32		qR;		/* Cached random number */
-  unsigned long	qavg_old; /*old qavg for CARED*/
+	unsigned long	qavg_old;
 	unsigned long	qavg;		/* Average queue length: Wlog scaled */
 	ktime_t		qidlestart;	/* Start of current idle period */
 };
@@ -138,8 +164,19 @@ static inline void red_set_vars(struct red_vars *v)
 	 * it might result in an unreasonable qavg for a while. --TGR
 	 */
 	v->qavg		= 0;
-  v->qavg_old = 0;
+	v->qavg_old = 0;
 	v->qcount	= -1;
+}
+
+static inline bool red_check_params(u32 qth_min, u32 qth_max, u8 Wlog)
+{
+	if (fls(qth_min) + Wlog > 32)
+		return false;
+	if (fls(qth_max) + Wlog > 32)
+		return false;
+	if (qth_max < qth_min)
+		return false;
+	return true;
 }
 
 static inline void red_set_parms(struct red_parms *p,
@@ -153,7 +190,7 @@ static inline void red_set_parms(struct red_parms *p,
 	p->qth_max	= qth_max << Wlog;
 	p->Wlog		= Wlog;
 	p->Plog		= Plog;
-	if (delta < 0)
+	if (delta <= 0)
 		delta = 1;
 	p->qth_delta	= delta;
 	if (!max_P) {
@@ -190,7 +227,7 @@ static inline void rared_red_set_parms(struct red_parms *p,
 	p->qth_max	= qth_max << Wlog;
 	p->Wlog		= Wlog;
 	p->Plog		= Plog;
-	if (delta < 0)
+	if (delta <= 0)
 		delta = 1;
 	p->qth_delta	= delta;
 	if (!max_P) {
@@ -236,7 +273,6 @@ static inline void red_restart(struct red_vars *v)
 {
 	red_end_of_idle_period(v);
 	v->qavg = 0;
-  v->qavg_old = 0;
 	v->qcount = -1;
 }
 
@@ -325,15 +361,19 @@ static inline int red_mark_probability(const struct red_parms *p,
 				       unsigned long qavg)
 {
 	/* The formula used below causes questions.
+
 	   OK. qR is random number in the interval
 		(0..1/max_P)*(qth_max-qth_min)
 	   i.e. 0..(2^Plog). If we used floating point
 	   arithmetics, it would be: (2^Plog)*rnd_num,
 	   where rnd_num is less 1.
+
 	   Taking into account, that qavg have fixed
 	   point at Wlog, two lines
 	   below have the following floating point equivalent:
+
 	   max_P*(qavg - qth_min)/(qth_max-qth_min) < rnd/qcount
+
 	   Any questions? --ANK (980924)
 	 */
 	return !(((qavg - p->qth_min) >> p->Wlog) * v->qcount < v->qR);
@@ -412,7 +452,6 @@ static inline void red_adaptative_algo(struct red_parms *p, struct red_vars *v)
 	max_p_delta = max(max_p_delta, 1U);
 	p->max_P_reciprocal = reciprocal_value(max_p_delta);
 }
-#endif
 
 static inline void red_refined_adaptative_algo(struct red_parms *p, struct red_vars *v)
 {
@@ -447,7 +486,6 @@ static inline void red_refined_adaptative_algo(struct red_parms *p, struct red_v
 	max_p_delta = max(max_p_delta, 1U);
 	p->max_P_reciprocal = reciprocal_value(max_p_delta);
 }
-
 //CARED algorithm implimentation assuming we can have previous qavg from global
 
 static inline void red_cautioiously_adaptive_algo(struct red_params *p,struct red_vars *v)
@@ -506,3 +544,5 @@ static inline void red_cautioiously_adaptive_algo(struct red_params *p,struct re
 	max_p_delta = max(max_p_delta, 1U);
 	p->max_P_reciprocal = reciprocal_value(max_p_delta);
 }
+#endif
+
