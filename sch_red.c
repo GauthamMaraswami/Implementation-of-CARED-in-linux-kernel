@@ -21,7 +21,7 @@
 #include <net/pkt_sched.h>
 #include <net/pkt_cls.h>
 #include <net/inet_ecn.h>
-#include <net/red.h>
+#include <net/redg.h>
 
 
 /*	Parameters, settable by user:
@@ -61,14 +61,21 @@ static inline int red_use_harddrop(struct red_sched_data *q)
 static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		       struct sk_buff **to_free)
 {
+
+	
 	struct red_sched_data *q = qdisc_priv(sch);
+	
 	struct Qdisc *child = q->qdisc;
 	int ret;
 
 	q->vars.qavg = red_calc_qavg(&q->parms,
 				     &q->vars,
 				     child->qstats.backlog);
-
+  
+ 
+	bool rared_enable=true;
+	if(rared_enable)
+                red_cautioiously_adaptive_algo(&q->parms,&q->vars);
 	if (red_is_idling(&q->vars))
 		red_end_of_idle_period(&q->vars);
 
@@ -106,6 +113,7 @@ static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		q->stats.pdrop++;
 		qdisc_qstats_drop(sch);
 	}
+
 	return ret;
 
 congestion_drop:
@@ -115,8 +123,10 @@ congestion_drop:
 
 static struct sk_buff *red_dequeue(struct Qdisc *sch)
 {
+	
 	struct sk_buff *skb;
 	struct red_sched_data *q = qdisc_priv(sch);
+	printk(KERN_INFO "deque %lu \n",q->vars.qavg);
 	struct Qdisc *child = q->qdisc;
 
 	skb = child->dequeue(child);
@@ -128,6 +138,7 @@ static struct sk_buff *red_dequeue(struct Qdisc *sch)
 		if (!red_is_idling(&q->vars))
 			red_start_of_idle_period(&q->vars);
 	}
+printk(KERN_INFO "deque iron %d %d %d %d \n",iron0,iron1,iron2,iron3);
 	return skb;
 }
 
@@ -284,6 +295,10 @@ static inline void red_refined_adaptative_timer(struct timer_list *t)
 }
 static inline void red_cautiously_adaptative_timer(struct timer_list *t)
 {
+iron0=0;
+iron1=0;
+iron2=0;
+iron3=0;
 	struct red_sched_data *q = from_timer(q, t, adapt_timer);
 	struct Qdisc *sch = q->sch;
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
@@ -296,10 +311,11 @@ static inline void red_cautiously_adaptative_timer(struct timer_list *t)
 static int red_init(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct red_sched_data *q = qdisc_priv(sch);
-printk(KERN_INFO "Hello, world 2\n")	;;;
+
 	q->qdisc = &noop_qdisc;
 	q->sch = sch;
-	timer_setup(&q->adapt_timer, red_cautiously_adaptative_timer, 0);
+	printk(KERN_INFO "Hello %lu \n",qavg_old_global);	
+	timer_setup(&q->adapt_timer, red_adaptative_timer, 0);
 	return red_change(sch, opt);
 }
 
@@ -473,4 +489,3 @@ module_init(red_module_init)
 module_exit(red_module_exit)
 
 MODULE_LICENSE("GPL");
-
