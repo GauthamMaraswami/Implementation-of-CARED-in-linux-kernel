@@ -116,7 +116,7 @@
 #define RED_STAB_SIZE	256
 #define RED_STAB_MASK	(RED_STAB_SIZE - 1)
 unsigned long qavg_old_global;
-int iron0,iron1,iron2,iron3;
+
 struct red_stats {
 	u32		prob_drop;	/* Early probability drops */
 	u32		prob_mark;	/* Early probability marks */
@@ -525,13 +525,13 @@ static inline void red_cautioiously_adaptive_algo(struct red_parms *p, struct re
 		{
 			//rared case
 			p->max_P += at_diff/t_pro; //rared /* maxp = maxp + alpha ; alpha=0.25*((qavg-target)/target)*max_P*/
-			iron0++;
+			
        		}
 		else
 		{
 			//ared case
 			p->max_P +=MAX_P_ALPHA(p->max_P); /*maxp=maxp+alpha*/
-			iron1++;
+		
 		}
 	}
 	else if (qavg_new < p->target_min && p->max_P >= MAX_P_MIN)
@@ -540,13 +540,13 @@ static inline void red_cautioiously_adaptive_algo(struct red_parms *p, struct re
 		{	
 			//ared case
 			p->max_P =(p->max_P/10)*9;/* maxp=maxp*Beta */
-			iron2++;
+			
 		}
 		else
 		{
 			//rared case
 		p->max_P*= (1-ta_diff/tmin_diff) ;//rared /* maxp = maxp * Beta ; Beta=1-(0.17*(target-avg)/(trget-min_th))*/
-			iron3++;
+		
 		}
 	}            
   	qavg_old_global=qavg_new;                     
