@@ -138,7 +138,7 @@ static struct sk_buff *red_dequeue(struct Qdisc *sch)
 		if (!red_is_idling(&q->vars))
 			red_start_of_idle_period(&q->vars);
 	}
-printk(KERN_INFO "deque iron %d %d %d %d \n",iron0,iron1,iron2,iron3);
+
 	return skb;
 }
 
@@ -295,10 +295,7 @@ static inline void red_refined_adaptative_timer(struct timer_list *t)
 }
 static inline void red_cautiously_adaptative_timer(struct timer_list *t)
 {
-iron0=0;
-iron1=0;
-iron2=0;
-iron3=0;
+
 	struct red_sched_data *q = from_timer(q, t, adapt_timer);
 	struct Qdisc *sch = q->sch;
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
