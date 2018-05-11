@@ -21,7 +21,7 @@
 #include <net/pkt_sched.h>
 #include <net/pkt_cls.h>
 #include <net/inet_ecn.h>
-#include <net/red.h>
+#include <net/redg.h>
 
 
 /*	Parameters, settable by user:
@@ -61,14 +61,24 @@ static inline int red_use_harddrop(struct red_sched_data *q)
 static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		       struct sk_buff **to_free)
 {
+
+	
 	struct red_sched_data *q = qdisc_priv(sch);
+	
 	struct Qdisc *child = q->qdisc;
 	int ret;
 
 	q->vars.qavg = red_calc_qavg(&q->parms,
 				     &q->vars,
 				     child->qstats.backlog);
-
+  
+ 
+	bool rared_enable=false;
+	bool cared_enable=true;
+	if(cared_enable)
+                red_cautioiously_adaptive_algo(&q->parms,&q->vars);
+	if(rared_enable)
+                red_refined_adaptative_algo(&q->parms,&q->vars);
 	if (red_is_idling(&q->vars))
 		red_end_of_idle_period(&q->vars);
 
@@ -106,6 +116,7 @@ static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		q->stats.pdrop++;
 		qdisc_qstats_drop(sch);
 	}
+
 	return ret;
 
 congestion_drop:
@@ -115,8 +126,10 @@ congestion_drop:
 
 static struct sk_buff *red_dequeue(struct Qdisc *sch)
 {
+	
 	struct sk_buff *skb;
 	struct red_sched_data *q = qdisc_priv(sch);
+	printk(KERN_INFO "deque %lu \n",q->vars.qavg);
 	struct Qdisc *child = q->qdisc;
 
 	skb = child->dequeue(child);
@@ -128,6 +141,7 @@ static struct sk_buff *red_dequeue(struct Qdisc *sch)
 		if (!red_is_idling(&q->vars))
 			red_start_of_idle_period(&q->vars);
 	}
+
 	return skb;
 }
 
@@ -157,6 +171,7 @@ static int red_offload(struct Qdisc *sch, bool enable)
 		.handle = sch->handle,
 		.parent = sch->parent,
 	};
+	int err;
 
 	if (!tc_can_offload(dev) || !dev->netdev_ops->ndo_setup_tc)
 		return -EOPNOTSUPP;
@@ -167,12 +182,18 @@ static int red_offload(struct Qdisc *sch, bool enable)
 		opt.set.max = q->parms.qth_max >> q->parms.Wlog;
 		opt.set.probability = q->parms.max_P;
 		opt.set.is_ecn = red_use_ecn(q);
-		opt.set.qstats = &sch->qstats;
 	} else {
 		opt.command = TC_RED_DESTROY;
 	}
 
-	return dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_RED, &opt);
+	err = dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_RED, &opt);
+
+	if (!err && enable)
+		sch->flags |= TCQ_F_OFFLOADED;
+	else
+		sch->flags &= ~TCQ_F_OFFLOADED;
+
+	return err;
 }
 
 static void red_destroy(struct Qdisc *sch)
@@ -190,8 +211,7 @@ static const struct nla_policy red_policy[TCA_RED_MAX + 1] = {
 	[TCA_RED_MAX_P] = { .type = NLA_U32 },
 };
 
-static int red_change(struct Qdisc *sch, struct nlattr *opt,
-		      struct netlink_ext_ack *extack)
+static int red_change(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct red_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_RED_MAX + 1];
@@ -218,8 +238,7 @@ static int red_change(struct Qdisc *sch, struct nlattr *opt,
 		return -EINVAL;
 
 	if (ctl->limit > 0) {
-		child = fifo_create_dflt(sch, &bfifo_qdisc_ops, ctl->limit,
-					 extack);
+		child = fifo_create_dflt(sch, &bfifo_qdisc_ops, ctl->limit);
 		if (IS_ERR(child))
 			return PTR_ERR(child);
 	}
@@ -266,16 +285,38 @@ static inline void red_adaptative_timer(struct timer_list *t)
 	mod_timer(&q->adapt_timer, jiffies + HZ/2);
 	spin_unlock(root_lock);
 }
+static inline void red_refined_adaptative_timer(struct timer_list *t)
+{
+	struct red_sched_data *q = from_timer(q, t, adapt_timer);
+	struct Qdisc *sch = q->sch;
+	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 
-static int red_init(struct Qdisc *sch, struct nlattr *opt,
-		    struct netlink_ext_ack *extack)
+	spin_lock(root_lock);
+	red_refined_adaptative_algo(&q->parms, &q->vars);
+	mod_timer(&q->adapt_timer, jiffies + HZ/2);
+	spin_unlock(root_lock);
+}
+static inline void red_cautiously_adaptative_timer(struct timer_list *t)
+{
+
+	struct red_sched_data *q = from_timer(q, t, adapt_timer);
+	struct Qdisc *sch = q->sch;
+	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
+
+	spin_lock(root_lock);
+	red_cautioiously_adaptive_algo(&q->parms, &q->vars);
+	mod_timer(&q->adapt_timer, jiffies + HZ/2);
+	spin_unlock(root_lock);
+}
+static int red_init(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct red_sched_data *q = qdisc_priv(sch);
 
 	q->qdisc = &noop_qdisc;
 	q->sch = sch;
+	printk(KERN_INFO "Hello %lu \n",qavg_old_global);	
 	timer_setup(&q->adapt_timer, red_adaptative_timer, 0);
-	return red_change(sch, opt, extack);
+	return red_change(sch, opt);
 }
 
 static int red_dump_offload_stats(struct Qdisc *sch, struct tc_red_qopt *opt)
@@ -290,22 +331,12 @@ static int red_dump_offload_stats(struct Qdisc *sch, struct tc_red_qopt *opt)
 			.stats.qstats = &sch->qstats,
 		},
 	};
-	int err;
 
-	sch->flags &= ~TCQ_F_OFFLOADED;
-
-	if (!tc_can_offload(dev) || !dev->netdev_ops->ndo_setup_tc)
+	if (!(sch->flags & TCQ_F_OFFLOADED))
 		return 0;
 
-	err = dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_RED,
-					    &hw_stats);
-	if (err == -EOPNOTSUPP)
-		return 0;
-
-	if (!err)
-		sch->flags |= TCQ_F_OFFLOADED;
-
-	return err;
+	return dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_RED,
+					     &hw_stats);
 }
 
 static int red_dump(struct Qdisc *sch, struct sk_buff *skb)
@@ -323,6 +354,7 @@ static int red_dump(struct Qdisc *sch, struct sk_buff *skb)
 	};
 	int err;
 
+	sch->qstats.backlog = q->qdisc->qstats.backlog;
 	err = red_dump_offload_stats(sch, &opt);
 	if (err)
 		goto nla_put_failure;
@@ -344,24 +376,32 @@ static int red_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 {
 	struct red_sched_data *q = qdisc_priv(sch);
 	struct net_device *dev = qdisc_dev(sch);
-	struct tc_red_xstats st = {0};
+	struct tc_red_xstats st = {
+		.early	= q->stats.prob_drop + q->stats.forced_drop,
+		.pdrop	= q->stats.pdrop,
+		.other	= q->stats.other,
+		.marked	= q->stats.prob_mark + q->stats.forced_mark,
+	};
 
 	if (sch->flags & TCQ_F_OFFLOADED) {
+		struct red_stats hw_stats = {0};
 		struct tc_red_qopt_offload hw_stats_request = {
 			.command = TC_RED_XSTATS,
 			.handle = sch->handle,
 			.parent = sch->parent,
 			{
-				.xstats = &q->stats,
+				.xstats = &hw_stats,
 			},
 		};
-		dev->netdev_ops->ndo_setup_tc(dev, TC_SETUP_QDISC_RED,
-					      &hw_stats_request);
+		if (!dev->netdev_ops->ndo_setup_tc(dev,
+						   TC_SETUP_QDISC_RED,
+						   &hw_stats_request)) {
+			st.early += hw_stats.prob_drop + hw_stats.forced_drop;
+			st.pdrop += hw_stats.pdrop;
+			st.other += hw_stats.other;
+			st.marked += hw_stats.prob_mark + hw_stats.forced_mark;
+		}
 	}
-	st.early = q->stats.prob_drop + q->stats.forced_drop;
-	st.pdrop = q->stats.pdrop;
-	st.other = q->stats.other;
-	st.marked = q->stats.prob_mark + q->stats.forced_mark;
 
 	return gnet_stats_copy_app(d, &st, sizeof(st));
 }
@@ -377,7 +417,7 @@ static int red_dump_class(struct Qdisc *sch, unsigned long cl,
 }
 
 static int red_graft(struct Qdisc *sch, unsigned long arg, struct Qdisc *new,
-		     struct Qdisc **old, struct netlink_ext_ack *extack)
+		     struct Qdisc **old)
 {
 	struct red_sched_data *q = qdisc_priv(sch);
 
