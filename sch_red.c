@@ -73,9 +73,12 @@ static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 				     child->qstats.backlog);
   
  
-	bool rared_enable=true;
-	if(rared_enable)
+	bool rared_enable=false;
+	bool cared_enable=true;
+	if(cared_enable)
                 red_cautioiously_adaptive_algo(&q->parms,&q->vars);
+	if(rared_enable)
+                red_refined_adaptative_algo(&q->parms,&q->vars);
 	if (red_is_idling(&q->vars))
 		red_end_of_idle_period(&q->vars);
 
