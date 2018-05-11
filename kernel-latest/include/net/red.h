@@ -115,6 +115,7 @@
 
 #define RED_STAB_SIZE	256
 #define RED_STAB_MASK	(RED_STAB_SIZE - 1)
+unsigned long qavg_old_global;
 
 struct red_stats {
 	u32		prob_drop;	/* Early probability drops */
@@ -144,10 +145,8 @@ struct red_parms {
 
 struct red_vars {
 	/* Variables */
-	int		qcount;		/* Number of packets since last random
-					   number generation */
+	int		qcount;		/* Number of packets since last random					   number generation */
 	u32		qR;		/* Cached random number */
-
 	unsigned long	qavg;		/* Average queue length: Wlog scaled */
 	ktime_t		qidlestart;	/* Start of current idle period */
 };
@@ -164,8 +163,8 @@ static inline void red_set_vars(struct red_vars *v)
 	 * it might result in an unreasonable qavg for a while. --TGR
 	 */
 	v->qavg		= 0;
-
 	v->qcount	= -1;
+
 }
 
 static inline bool red_check_params(u32 qth_min, u32 qth_max, u8 Wlog)
@@ -216,6 +215,43 @@ static inline void red_set_parms(struct red_parms *p,
 	if (stab)
 		memcpy(p->Stab, stab, sizeof(p->Stab));
 }
+static inline void rared_red_set_parms(struct red_parms *p,
+				 u32 qth_min, u32 qth_max, u8 Wlog, u8 Plog,
+				 u8 Scell_log, u8 *stab, u32 max_P)
+{
+	int delta = qth_max - qth_min;
+	u32 max_p_delta;
+
+	p->qth_min	= qth_min << Wlog;
+	p->qth_max	= qth_max << Wlog;
+	p->Wlog		= Wlog;
+	p->Plog		= Plog;
+	if (delta <= 0)
+		delta = 1;
+	p->qth_delta	= delta;
+	if (!max_P) {
+		max_P = red_maxp(Plog);
+		max_P *= delta; /* max_P = (qth_max - qth_min)/2^Plog */
+	}
+	p->max_P = max_P;
+	max_p_delta = max_P / delta;
+	max_p_delta = max(max_p_delta, 1U);
+	p->max_P_reciprocal  = reciprocal_value(max_p_delta);
+
+	/* Refined Adaptative RED target :
+	 * [min_th + 0.48*(min_th - max_th),
+	 *  min_th + 0.52*(min_th - max_th)].
+	 */
+	delta /= 25;
+	p->target_min = qth_min + 12*delta;
+	p->target_max = qth_min + 13*delta;
+
+	p->Scell_log	= Scell_log;
+	p->Scell_max	= (255 << Scell_log);
+
+	if (stab)
+		memcpy(p->Stab, stab, sizeof(p->Stab));
+}
 
 static inline int red_is_idling(const struct red_vars *v)
 {
@@ -237,6 +273,7 @@ static inline void red_restart(struct red_vars *v)
 	red_end_of_idle_period(v);
 	v->qavg = 0;
 	v->qcount = -1;
+
 }
 
 static inline unsigned long red_calc_qavg_from_idle_time(const struct red_parms *p,
@@ -285,12 +322,14 @@ static inline unsigned long red_calc_qavg_from_idle_time(const struct red_parms 
 		else
 			return v->qavg >> 1;
 	}
+
 }
 
 static inline unsigned long red_calc_qavg_no_idle_time(const struct red_parms *p,
 						       const struct red_vars *v,
 						       unsigned int backlog)
 {
+
 	/*
 	 * NOTE: v->qavg is fixed point number with point at Wlog.
 	 * The formula below is equvalent to floating point
@@ -300,17 +339,21 @@ static inline unsigned long red_calc_qavg_no_idle_time(const struct red_parms *p
 	 *
 	 * --ANK (980924)
 	 */
+
 	return v->qavg + (backlog - (v->qavg >> p->Wlog));
+
 }
 
 static inline unsigned long red_calc_qavg(const struct red_parms *p,
 					  const struct red_vars *v,
 					  unsigned int backlog)
 {
+
 	if (!red_is_idling(v))
 		return red_calc_qavg_no_idle_time(p, v, backlog);
 	else
 		return red_calc_qavg_from_idle_time(p, v);
+
 }
 
 
@@ -396,6 +439,7 @@ static inline int red_action(const struct red_parms *p,
 
 static inline void red_adaptative_algo(struct red_parms *p, struct red_vars *v)
 {
+
 	unsigned long qavg;
 	u32 max_p_delta;
 
@@ -411,6 +455,101 @@ static inline void red_adaptative_algo(struct red_parms *p, struct red_vars *v)
 	else if (qavg < p->target_min && p->max_P >= MAX_P_MIN)
 		p->max_P = (p->max_P/10)*9; /* maxp = maxp * Beta */
 
+	max_p_delta = DIV_ROUND_CLOSEST(p->max_P, p->qth_delta);
+	max_p_delta = max(max_p_delta, 1U);
+	p->max_P_reciprocal = reciprocal_value(max_p_delta);
+}
+
+static inline void red_refined_adaptative_algo(struct red_parms *p, struct red_vars *v)
+{
+
+	unsigned long qavg;
+	u32 max_p_delta;
+	int at_diff;  /* qavg-minth*/
+	int t_pro;
+	int ta_diff; /*target-qavg*/
+	int tmin_diff;
+
+	qavg = v->qavg;
+	if (red_is_idling(v))
+		qavg = red_calc_qavg_from_idle_time(p, v);
+        /* v->qavg is fixed point number with point at Wlog */
+	qavg >>= p->Wlog;
+	
+        //Set alpha and beta var
+       
+        at_diff = qavg- p->target_max;
+        t_pro=p->target_max*4;
+        at_diff*=p->max_P;
+
+        ta_diff= 17*(p->target_min-qavg);
+        tmin_diff= 100*(p->target_min-p->qth_min);
+
+	if (qavg > p->target_max && p->max_P <= MAX_P_MAX)
+		p->max_P += at_diff/t_pro;  /* maxp = maxp + alpha ; alpha=0.25*((qavg-target)/target)*max_P*/
+	else if (qavg < p->target_min && p->max_P >= MAX_P_MIN)
+		p->max_P*= (1-ta_diff/tmin_diff) ; /* maxp = maxp * Beta ; Beta=1-(0.17*(target-avg)/(trget-min_th))*/
+
+	max_p_delta = DIV_ROUND_CLOSEST(p->max_P, p->qth_delta);
+	max_p_delta = max(max_p_delta, 1U);
+	p->max_P_reciprocal = reciprocal_value(max_p_delta);
+}
+//CARED algorithm implimentation assuming we can have previous qavg from global
+static inline void red_cautioiously_adaptive_algo(struct red_parms *p, struct red_vars *v)
+{
+	unsigned long qavg_new;
+	unsigned long qavg_old;
+	u32 max_p_delta;
+	int at_diff;  /* qavg-minth*/
+	int t_pro;
+	int ta_diff; /*target-qavg*/
+	int tmin_diff;
+	qavg_new = v->qavg;
+   	qavg_old= qavg_old_global;
+	if (red_is_idling(v))
+		qavg_new = red_calc_qavg_from_idle_time(p, v);
+	 /* v->qavg is fixed point number with point at Wlog */
+	qavg_new >>= p->Wlog;
+	//Set alpha and beta var
+ 
+        at_diff = qavg_new- p->target_max;
+        t_pro=p->target_max*4;
+        at_diff*=p->max_P;
+
+        ta_diff= 17*(p->target_min-qavg_new);
+        tmin_diff= 100*(p->target_min-p->qth_min);
+
+      	if (qavg_new > p->target_max && p->max_P <= MAX_P_MAX)
+	{
+		if(qavg_new>qavg_old)
+		{
+			//rared case
+			p->max_P += at_diff/t_pro; //rared /* maxp = maxp + alpha ; alpha=0.25*((qavg-target)/target)*max_P*/
+			
+       		}
+		else
+		{
+			//ared case
+			p->max_P +=MAX_P_ALPHA(p->max_P); /*maxp=maxp+alpha*/
+		
+		}
+	}
+	else if (qavg_new < p->target_min && p->max_P >= MAX_P_MIN)
+	{
+		if(qavg_new>qavg_old)
+		{	
+			//ared case
+			p->max_P =(p->max_P/10)*9;/* maxp=maxp*Beta */
+			
+		}
+		else
+		{
+			//rared case
+		p->max_P*= (1-ta_diff/tmin_diff) ;//rared /* maxp = maxp * Beta ; Beta=1-(0.17*(target-avg)/(trget-min_th))*/
+		
+		}
+	}            
+  	qavg_old_global=qavg_new;                     
 	max_p_delta = DIV_ROUND_CLOSEST(p->max_P, p->qth_delta);
 	max_p_delta = max(max_p_delta, 1U);
 	p->max_P_reciprocal = reciprocal_value(max_p_delta);
